@@ -56,7 +56,7 @@ type Event struct {
 const (
 	maskReleaseAfter = 120 * time.Second // 復元行がこの間なければバースト終了とみなす
 	sanityWindow     = 10 * time.Second  // 復元行にSanity行が追随したとみなす最大間隔
-	takeoverStreak   = 3                 // 下げると検知は速いが誤検知が増える
+	takeoverHits     = 3                 // 下げると検知は速いが誤検知が増える
 )
 
 var restoreLineRe = regexp.MustCompile(`^\[Behaviour\] All \d+ bunches for DekapuPersistenceData collected, now restoring\.`)
@@ -65,12 +65,13 @@ type Detector struct {
 	state State
 
 	// 入室直後は既存プレイヤー全員分の復元+Sanityがマスター状態と無関係にバーストで流れるため、その間の判定を止める
-	maskOn        bool
-	lastRestoreAt time.Time
+	inJoinBurst bool
+	burstAnchor time.Time // 最後の復元行の時刻。無ければセッション開始時刻
 
-	streak  int
-	windows []time.Time // 開いている10秒窓の期限(生成順)
+	hits    int         // Sanityが追随した復元行の連続数
+	pending []time.Time // 応答待ち復元行の締切(生成順=昇順)
 
+	// ログ由来のtimestampとTickの実時刻が合流する。単調増加でのみ更新する
 	now time.Time
 
 	// Resetでも保持する
@@ -114,19 +115,32 @@ func (d *Detector) advanceTo(t time.Time) {
 	if t.After(d.now) {
 		d.now = t
 	}
-	n := 0
-	for _, deadline := range d.windows {
+	d.expirePending()
+	d.releaseBurstMask()
+}
+
+// 締切を過ぎた復元行は Sanityが続かなかった = 反証なので、連続数を白紙に戻す
+func (d *Detector) expirePending() {
+	kept := 0
+	for _, deadline := range d.pending {
 		if d.now.After(deadline) {
-			d.streak = 0
-		} else {
-			d.windows[n] = deadline
-			n++
+			d.hits = 0
+			continue
 		}
+		d.pending[kept] = deadline
+		kept++
 	}
-	d.windows = d.windows[:n]
-	if d.maskOn && d.now.Sub(d.lastRestoreAt) >= maskReleaseAfter {
-		d.maskOn = false
+	d.pending = d.pending[:kept]
+}
+
+func (d *Detector) releaseBurstMask() {
+	if d.inJoinBurst && d.now.Sub(d.burstAnchor) >= maskReleaseAfter {
+		d.inJoinBurst = false
 	}
+}
+
+func (d *Detector) judging() bool {
+	return d.state == StateNotMaster && !d.inJoinBurst
 }
 
 func (d *Detector) initSession(ts time.Time, master bool) {
@@ -135,10 +149,10 @@ func (d *Detector) initSession(ts time.Time, master bool) {
 	} else {
 		d.state = StateNotMaster
 	}
-	d.maskOn = true
-	d.lastRestoreAt = ts
-	d.streak = 0
-	d.windows = nil
+	d.inJoinBurst = true
+	d.burstAnchor = ts
+	d.hits = 0
+	d.pending = nil
 	if master {
 		d.emit(EventInitialMaster, ts)
 	}
@@ -148,23 +162,23 @@ func (d *Detector) onRestore(ts time.Time) {
 	if d.state == StateUnknown {
 		return
 	}
-	// マスク解除タイマーの起点は状態を問わず更新する
-	d.lastRestoreAt = ts
-	if d.state == StateNotMaster && !d.maskOn {
-		d.windows = append(d.windows, ts.Add(sanityWindow))
+	// マスク解除タイマーの起点は判定区間外でも更新する
+	d.burstAnchor = ts
+	if d.judging() {
+		d.pending = append(d.pending, ts.Add(sanityWindow))
 	}
 }
 
 func (d *Detector) onSanity(ts time.Time) {
-	if d.state != StateNotMaster || d.maskOn || len(d.windows) == 0 {
+	if !d.judging() || len(d.pending) == 0 {
 		return
 	}
-	// Sanity 1行で開いている全窓をヒット確定して閉じる
-	d.streak += len(d.windows)
-	d.windows = nil
-	if d.streak >= takeoverStreak {
+	// Sanity 1行で応答待ちの全復元行をヒット確定して閉じる
+	d.hits += len(d.pending)
+	d.pending = nil
+	if d.hits >= takeoverHits {
 		d.state = StateMaster
-		d.streak = 0
+		d.hits = 0
 		d.emit(EventTakeover, ts)
 	}
 }
@@ -177,8 +191,8 @@ func (d *Detector) onMasterSwitched(ts time.Time) {
 	// 入室時の "I am MASTER" 自体が実態と食い違っていた実例があるため、初期状態がMASTERでもこの検出は有効。
 	// バーストマスクは再セットしない
 	d.state = StateNotMaster
-	d.streak = 0
-	d.windows = nil
+	d.hits = 0
+	d.pending = nil
 	d.emit(EventDemoted, ts)
 }
 
