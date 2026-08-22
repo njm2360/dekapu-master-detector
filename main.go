@@ -16,7 +16,7 @@ import (
 const (
 	oscHost        = "127.0.0.1"
 	oscPort        = 9000
-	oscParam       = "/avatar/parameters/IsInstanceMaster"
+	oscParam       = "/avatar/parameters/MasterDisplay/IsMaster"
 	resendInterval = 3 * time.Second
 )
 
