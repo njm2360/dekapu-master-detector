@@ -6,27 +6,32 @@ import (
 )
 
 type Sender struct {
-	conn net.Conn
+	conn net.PacketConn
+	dest net.Addr
 	addr string
 }
 
 func New(host string, port int, paramAddr string) (*Sender, error) {
-	conn, err := net.Dial("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+	dest, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err
 	}
-	return &Sender{conn: conn, addr: paramAddr}, nil
+	// 接続済みソケットだと受け手不在時のICMPで次の送信がエラーになるため非接続にする
+	conn, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		return nil, err
+	}
+	return &Sender{conn: conn, dest: dest, addr: paramAddr}, nil
 }
 
 // boolはOSCタイプタグ(T/F)自体が値なのでペイロードはない
-func (s *Sender) Send(isMaster bool) error {
+func (s *Sender) Send(isMaster bool) {
 	tag := ",F"
 	if isMaster {
 		tag = ",T"
 	}
 	msg := append(pad([]byte(s.addr)), pad([]byte(tag))...)
-	_, err := s.conn.Write(msg)
-	return err
+	s.conn.WriteTo(msg, s.dest)
 }
 
 // NUL終端して4バイト境界までパディング

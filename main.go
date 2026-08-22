@@ -34,9 +34,7 @@ func main() {
 	var published atomic.Bool
 	send := func(v bool) {
 		published.Store(v)
-		if err := sender.Send(v); err != nil {
-			log.Printf("osc: send failed: %v", err)
-		}
+		sender.Send(v)
 	}
 
 	live := false
@@ -60,9 +58,7 @@ func main() {
 		t := time.NewTicker(resendInterval)
 		defer t.Stop()
 		for range t.C {
-			if err := sender.Send(published.Load()); err != nil {
-				log.Printf("osc: resend failed: %v", err)
-			}
+			sender.Send(published.Load())
 		}
 	}()
 
