@@ -33,23 +33,25 @@ func main() {
 	// リプレイ中の状態のバタつきを外部へ出さないよう、公開済みの値を別に持つ
 	var published atomic.Bool
 	send := func(v bool) {
-		published.Store(v)
+		if published.Swap(v) != v {
+			log.Printf("osc: IsMaster=%v", v)
+		}
 		sender.Send(v)
 	}
 
+	// ログはリプレイ完了後のみ。リプレイ結果は OnCaughtUp の1行に集約する
 	live := false
 	det.OnEvent = func(ev detector.Event) {
 		if !live {
 			return
 		}
-		log.Printf("event: %s (log time %s)", ev.Type, ev.Time.Format("15:04:05"))
+		log.Printf("detector: %s %s -> %s (log time %s)", ev.Cause, ev.From, ev.To, ev.Time.Format("15:04:05"))
 	}
 	checkPublish := func() {
 		if !live {
 			return
 		}
 		if cur := det.IsMaster(); cur != published.Load() {
-			log.Printf("state changed: IsMaster=%v", cur)
 			send(cur)
 		}
 	}
@@ -83,7 +85,6 @@ func main() {
 		OnStale: func() {
 			live = false
 			det.Reset()
-			log.Printf("state=UNKNOWN, sending false")
 			send(false)
 		},
 	}

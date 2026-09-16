@@ -24,7 +24,19 @@ func newWithEvents() (*Detector, *[]Event) {
 	return d, events
 }
 
-// マスク解除済みの NOT_MASTER セッションを作るヘルパー
+func wantEvents(t *testing.T, got []Event, want ...Event) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].Cause != want[i].Cause || got[i].From != want[i].From || got[i].To != want[i].To {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	}
+}
+
+// マスク解除済みの NOT_MASTER セッションを作るヘルパー。開始イベントは消費済み
 func notMasterUnmasked(t *testing.T) (*Detector, *[]Event) {
 	t.Helper()
 	d, ev := newWithEvents()
@@ -33,6 +45,8 @@ func notMasterUnmasked(t *testing.T) (*Detector, *[]Event) {
 	if d.State() != StateNotMaster {
 		t.Fatalf("state = %v, want NOT_MASTER", d.State())
 	}
+	wantEvents(t, *ev, Event{Cause: CauseSessionStart, From: StateUnknown, To: StateNotMaster})
+	*ev = (*ev)[:0]
 	return d, ev
 }
 
@@ -43,9 +57,7 @@ func TestInitialMaster(t *testing.T) {
 	if !d.IsMaster() {
 		t.Fatal("want MASTER")
 	}
-	if len(*ev) != 1 || (*ev)[0].Type != EventInitialMaster {
-		t.Fatalf("events = %v, want [initial master]", *ev)
-	}
+	wantEvents(t, *ev, Event{Cause: CauseSessionStart, From: StateUnknown, To: StateMaster})
 }
 
 func TestTakeoverByThreeStreak(t *testing.T) {
@@ -62,9 +74,7 @@ func TestTakeoverByThreeStreak(t *testing.T) {
 	if !d.IsMaster() {
 		t.Fatal("want MASTER at streak 3")
 	}
-	if len(*ev) != 1 || (*ev)[0].Type != EventTakeover {
-		t.Fatalf("events = %v, want [takeover]", *ev)
-	}
+	wantEvents(t, *ev, Event{Cause: CauseTakeover, From: StateNotMaster, To: StateMaster})
 }
 
 func TestBurstMaskBlocksJudgment(t *testing.T) {
@@ -127,9 +137,7 @@ func TestMultipleConcurrentWindows(t *testing.T) {
 	if !d.IsMaster() {
 		t.Fatal("want MASTER at streak 3")
 	}
-	if len(*ev) != 1 || (*ev)[0].Type != EventTakeover {
-		t.Fatalf("events = %v, want [takeover]", *ev)
-	}
+	wantEvents(t, *ev, Event{Cause: CauseTakeover, From: StateNotMaster, To: StateMaster})
 }
 
 func TestSanityWithoutRestoreIgnored(t *testing.T) {
@@ -165,9 +173,10 @@ func TestDemotionOnMasterSwitched(t *testing.T) {
 	if d.IsMaster() {
 		t.Fatal("want demotion")
 	}
-	if len(*ev) != 2 || (*ev)[1].Type != EventDemoted {
-		t.Fatalf("events = %v, want [initial master, demoted]", *ev)
-	}
+	wantEvents(t, *ev,
+		Event{Cause: CauseSessionStart, From: StateUnknown, To: StateMaster},
+		Event{Cause: CauseDemoted, From: StateMaster, To: StateNotMaster},
+	)
 }
 
 func TestMasterSwitchedIgnoredWhileNotMaster(t *testing.T) {
@@ -179,12 +188,22 @@ func TestMasterSwitchedIgnoredWhileNotMaster(t *testing.T) {
 }
 
 func TestSessionReinitFromMaster(t *testing.T) {
-	d, _ := newWithEvents()
+	d, ev := newWithEvents()
 	d.Feed(at(0), lineMaster)
 	d.Feed(at(100), lineNotMaster) // Rejoin等でセッション再初期化
 	if d.State() != StateNotMaster {
 		t.Fatalf("state = %v, want NOT_MASTER", d.State())
 	}
+	wantEvents(t, *ev,
+		Event{Cause: CauseSessionStart, From: StateUnknown, To: StateMaster},
+		Event{Cause: CauseSessionStart, From: StateMaster, To: StateNotMaster},
+	)
+}
+
+func TestSessionStartEmitsEvenWhenStateUnchanged(t *testing.T) {
+	d, ev := notMasterUnmasked(t)
+	d.Feed(at(200), lineNotMaster)
+	wantEvents(t, *ev, Event{Cause: CauseSessionStart, From: StateNotMaster, To: StateNotMaster})
 }
 
 func TestUnrelatedLinesIgnored(t *testing.T) {

@@ -12,6 +12,6 @@ VRChatのログを監視して、自分がインスタンスマスターかど�
 
 ## OSC出力
 
-`127.0.0.1:9000` の `/avatar/parameters/IsInstanceMaster` へboolを送る。変化時に加えて3秒間隔で再送する(アバター変更でパラメータが揮発するため)。送信先やパラメータ名を変えるときは main.go の定数を書き換える。
+`127.0.0.1:9000` の `/avatar/parameters/MasterDisplay/IsMaster` へboolを送る。変化時に加えて3秒間隔で再送する(アバター変更でパラメータが揮発するため)。送信先やパラメータ名を変えるときは main.go の定数を書き換える。
 
 判定パラメータ(バーストマスク120秒、Sanity追随窓10秒、奪取確定3連続)は internal/detector/detector.go の定数にある。

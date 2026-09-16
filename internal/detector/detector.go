@@ -25,30 +25,33 @@ func (s State) String() string {
 	}
 }
 
-type EventType int
+type Cause int
 
 const (
-	EventInitialMaster EventType = iota
-	EventTakeover
-	EventDemoted
+	CauseSessionStart Cause = iota // "I am [*NOT*] MASTER" 行。From==To でも発火する
+	CauseTakeover
+	CauseDemoted
 )
 
-func (t EventType) String() string {
-	switch t {
-	case EventInitialMaster:
-		return "initial master"
-	case EventTakeover:
+func (c Cause) String() string {
+	switch c {
+	case CauseSessionStart:
+		return "session start"
+	case CauseTakeover:
 		return "takeover"
-	case EventDemoted:
+	case CauseDemoted:
 		return "demoted"
 	default:
 		return "unknown"
 	}
 }
 
+// 状態遷移1回につき1つ。Resetは呼び出し元が文脈を持つため発火しない
 type Event struct {
-	Type EventType
-	Time time.Time
+	Cause Cause
+	From  State
+	To    State
+	Time  time.Time
 }
 
 // 復元行の直後にSanity check行が続くのは自分がマスターの間だけ、という実ログで検証済みの法則に基づいて判定する。
@@ -144,18 +147,15 @@ func (d *Detector) judging() bool {
 }
 
 func (d *Detector) initSession(ts time.Time, master bool) {
-	if master {
-		d.state = StateMaster
-	} else {
-		d.state = StateNotMaster
-	}
 	d.inJoinBurst = true
 	d.burstAnchor = ts
 	d.hits = 0
 	d.pending = nil
+	to := StateNotMaster
 	if master {
-		d.emit(EventInitialMaster, ts)
+		to = StateMaster
 	}
+	d.transition(CauseSessionStart, to, ts)
 }
 
 func (d *Detector) onRestore(ts time.Time) {
@@ -177,9 +177,8 @@ func (d *Detector) onSanity(ts time.Time) {
 	d.hits += len(d.pending)
 	d.pending = nil
 	if d.hits >= takeoverHits {
-		d.state = StateMaster
 		d.hits = 0
-		d.emit(EventTakeover, ts)
+		d.transition(CauseTakeover, StateMaster, ts)
 	}
 }
 
@@ -190,14 +189,15 @@ func (d *Detector) onMasterSwitched(ts time.Time) {
 	// マスターは自分が退出するまで移らないはずなので、MASTER中にこの行が来た時点で自己認識の誤りが確定する。
 	// 入室時の "I am MASTER" 自体が実態と食い違っていた実例があるため、初期状態がMASTERでもこの検出は有効。
 	// バーストマスクは再セットしない
-	d.state = StateNotMaster
 	d.hits = 0
 	d.pending = nil
-	d.emit(EventDemoted, ts)
+	d.transition(CauseDemoted, StateNotMaster, ts)
 }
 
-func (d *Detector) emit(t EventType, ts time.Time) {
+func (d *Detector) transition(c Cause, to State, ts time.Time) {
+	from := d.state
+	d.state = to
 	if d.OnEvent != nil {
-		d.OnEvent(Event{Type: t, Time: ts})
+		d.OnEvent(Event{Cause: c, From: from, To: to, Time: ts})
 	}
 }
